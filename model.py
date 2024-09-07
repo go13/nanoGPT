@@ -105,6 +105,23 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class MidBlock(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        self.layer_emb = nn.Embedding(config.block_size, config.n_embd),
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.mlp = MLP(config)
+
+    def forward(self, x, pos, layer_num, t):
+        layer_num_vector = torch.full((t, ), layer_num, dtype=torch.long, device=x.device)  # shape (t)
+        layer_e = self.layer_emb(layer_num_vector)
+        x = x + self.attn(self.ln_1(x + pos + layer_e))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -127,7 +144,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            mid_transformer = Block(config),
+            mid_transformer = MidBlock(config),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
@@ -178,9 +195,10 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
+
+        for layer_num, block in enumerate(self.transformer.h):
             x = block(x)
-            x = self.transformer.mid_transformer(x)
+            x = self.transformer.mid_transformer(x, pos_emb, layer_num, t)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
